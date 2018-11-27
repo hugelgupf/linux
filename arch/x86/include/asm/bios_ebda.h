@@ -1,8 +1,10 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_BIOS_EBDA_H
 #define _ASM_X86_BIOS_EBDA_H
 
 #include <asm/io.h>
+#include <linux/io.h>
+#include <linux/types.h>
+#include <linux/kernel.h>
 
 /*
  * Returns physical address of EBDA.  Returns 0 if there is no EBDA.
@@ -18,7 +20,63 @@ static inline unsigned int get_bios_ebda(void)
 	return address;	/* 0 means none */
 }
 
-void reserve_bios_regions(void);
+/*
+ * Return the sanitized length of the EBDA in bytes, if it exists.
+ */
+static inline unsigned int get_bios_ebda_length(void)
+{
+	unsigned int address;
+	unsigned int length;
+	unsigned char *lenp;
+
+	address = get_bios_ebda();
+	if (!address)
+		return 0;
+
+	/* EBDA length is byte 0 of the EBDA (stored in KiB) */
+	//lenp = memremap(address, 1, MEMREMAP_WB);
+	length = *(unsigned char *)phys_to_virt(address);
+	//length = *lenp;
+	length <<= 10;
+
+	/* Trim the length if it extends beyond 640KiB */
+	length = min_t(unsigned int, (640 * 1024) - address, length);
+	return length;
+}
+
+/*
+ * Allocate a new chunk of memory in the EBDA, return a pointer to that chunk.
+ */
+static inline uintptr_t allocate_ebda_chunk(unsigned int desired)
+{
+	unsigned int address;
+	unsigned int length;
+	unsigned char *lenp;
+
+	address = get_bios_ebda();
+	if (!address)
+		return 0;
+
+	desired = ALIGN(desired, 0x400);
+
+	/* EBDA length is byte 0 of the EBDA (stored in KiB) */
+	lenp = memremap(address, 1, MEMREMAP_WB);
+	length = *lenp << 10;
+
+	if (length + desired > 640 * 1024)
+		return 0;
+
+	printk(KERN_ERR "before: %x %x %x\n", *lenp, length, desired);
+
+	/* Writing the new EBDA length back to the first byte */
+	*lenp = (length + desired) >> 10;
+	printk(KERN_ERR "after: %x\n", *lenp);
+
+	printk(KERN_ERR "after: %x\n", get_bios_ebda_length());
+	return (uintptr_t)(address + length);
+}
+
+void reserve_ebda_region(void);
 
 #ifdef CONFIG_X86_CHECK_BIOS_CORRUPTION
 /*
