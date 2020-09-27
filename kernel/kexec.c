@@ -2614,13 +2614,20 @@ struct BGRT_TABLE* efi_find_bgrt(void)
 
         for (i=0; i < num_entries; i++) {
                 u64 table_addr = (u64)rsdt->Tables[i];
+
+		// Some ACPI tables use memory not marked as ACPI data in e820,
+		// so it's possible we failed to map this ACPI table.
+		efi_remap_area( table_addr, EfiReservedMemoryType );
+
                 u32 signature = *(u32*)table_addr;
 
                 DebugMSG( "Table at 0x%llx signature = 0x%x",
                           table_addr, signature );
 
-                if (signature == BGRT_SIGNATURE)
+                if (signature == BGRT_SIGNATURE) {
+			DebugMSG("Found BGRT");
                         bgrt = (struct BGRT_TABLE*)table_addr;
+		}
         }
 
         return bgrt;
@@ -2632,8 +2639,7 @@ struct BGRT_TABLE* efi_find_bgrt(void)
 void efi_remap_ram_used_by_tables(void)
 {
         struct BGRT_TABLE* bgrt = efi_find_bgrt();
-
-        DebugMSG( "Found BGRT at %px", bgrt );
+        DebugMSG( "Found BGRT at %p", bgrt );
 
         efi_remap_phys_page( bgrt->LogoAddress );
 }
