@@ -4,6 +4,9 @@
 
 #include <linux/kexec.h>
 
+void efi_enter_rsp(unsigned long offset);
+void efi_exit_rsp(void);
+
 struct kimage *do_kimage_alloc_init(void);
 int sanity_check_segment_list(struct kimage *image);
 void kimage_free_page_list(struct list_head *list);

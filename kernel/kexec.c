@@ -25,6 +25,9 @@
 #include <asm/e820/api.h>
 /* #include <uapi/asm/e820.h> */
 
+void inline enter_efi_remap_stack(void);
+void inline exit_efi_remap_stack(void);
+
 static int copy_user_segment_list(struct kimage *image,
 				  unsigned long nr_segments,
 				  struct kexec_segment __user *segments)
@@ -318,14 +321,33 @@ void parse_reloc_table(struct kexec_segment *segment, struct kimage* image)
         u64 offset       = Lba * block_size;
         int ret          = -1;
 
+	exit_efi_remap_stack();
+
         DebugMSG( "device_id = %lld, MediaId = %d, block_io->file = %px "
-                  "Lba = %lld, BufferSize = %lld, Buffer = %px",
+                  "Lba = %lld, BufferSize = %lld, Buffer = %px, offset = %px",
                   block_io->device_id, MediaId, block_io->file,
-                  Lba, BufferSize, Buffer );
+                  Lba, BufferSize, Buffer, offset);
+
+        struct mm_struct      *mm  = current->mm;
+        struct vm_area_struct *vma = NULL;
+	unsigned long start = (unsigned long)Buffer;
+
+        vma = find_vma(mm, start) ;
+        DebugMSG( "start = 0x%lx, end = 0x%px, vma->vm_start = 0x%lx; "
+                  "vma->vm_end = 0x%lx",
+                  start, Buffer+BufferSize, vma->vm_start, vma->vm_end );
+        if ( vma->vm_start > start ) {
+		DebugMSG( "not in vma" );
+	}
+
+	register long rsp asm ("rsp");
+	DebugMSG("RSP: %lx PA %lx", rsp, __pa(rsp));
 
         ret = vfs_read(block_io->file, Buffer, BufferSize, &offset);
 
         DumpBuffer( "Device read", Buffer, 32 );
+
+	enter_efi_remap_stack();
 
         if (ret == BufferSize)
                 return EFI_SUCCESS;
@@ -347,6 +369,8 @@ void parse_reloc_table(struct kexec_segment *segment, struct kimage* image)
         u64 offset       = Lba * block_size;
         int ret          = -1;
 
+	exit_efi_remap_stack();
+
         DebugMSG( "device_id = %lld, MediaId = %d, "
                   "Lba = %lld, BufferSize = %lld",
                   block_io->device_id, MediaId, Lba, BufferSize );
@@ -354,6 +378,8 @@ void parse_reloc_table(struct kexec_segment *segment, struct kimage* image)
         ret = vfs_write(block_io->file, Buffer, BufferSize, &offset);
 
         DumpBuffer( "Device write", Buffer, 32 );
+
+	enter_efi_remap_stack();
 
         if (ret == BufferSize)
                 return EFI_SUCCESS;
@@ -827,7 +853,7 @@ void kimage_load_pe(struct kimage *image, unsigned long nr_segments)
         /* TODO: The followng base address should be taken from the segments:
          * image->raw_image = image->segment[0].mem;
            We need to fix u-root to have segment[0].mem be ImageBase */
-        image->raw_image          = (void*)0x10000000;
+        image->raw_image          = (void*)IMAGE_BASE;
 
         /* We allocate the raw_image in a 1:1 virt-to-phys mapping, so the code
          * can continue executing after Windows loader is taking over CR3 and
@@ -1170,7 +1196,7 @@ efi_status_t efi_handle_protocol_BlockIO( void* handle, void** interface )
         }
 
         block_io->file = filp_open(device_path_str, flags, mode);
-        DebugMSG( "Openning %s --> fp = %px", device_path_str, block_io->file );
+        DebugMSG( "Opening %s --> fp = %px", device_path_str, block_io->file );
 
         if (block_io->file == NULL) {
                 DebugMSG( "ERROR: Can't open device!" );
@@ -1314,8 +1340,8 @@ void efi_setup_11_mapping_physical_addr( unsigned long start, unsigned long end 
 
         /* Fetch the vma struct for our newly allocated user-space memory */
         vma = find_vma(mm, start) ;
-        DebugMSG( "vma->vm_start = 0x%lx; vma->vm_end = 0x%lx",
-                  vma->vm_start, vma->vm_end );
+        DebugMSG( "vma->vm_start = 0x%lx; vma->vm_end = 0x%lx, vma->vm_pgoff = 0x%lx off = 0x%lx",
+                  vma->vm_start, vma->vm_end, vma->vm_pgoff, start >> PAGE_SHIFT);
 
         /* Adjust end to fit the entire vma */
         if (vma->vm_end > end)
@@ -1326,6 +1352,19 @@ void efi_setup_11_mapping_physical_addr( unsigned long start, unsigned long end 
         remap_err = remap_pfn_range( vma, start, start >> PAGE_SHIFT,
                                      end - start, PAGE_KERNEL_EXEC );
         DebugMSG( "remap_pfn_range -> %d", remap_err );
+
+	DebugMSG("mm pgd: %lx, vma mm pgd: %lx", mm->pgd, vma->vm_mm->pgd);
+
+	int level;
+	pte_t* pte = lookup_address_in_pgd(mm->pgd, start, &level);
+	if (pte) {
+		DebugMSG("got pte level %d: %lx", level, *pte);
+		phys_addr_t phys_addr = (phys_addr_t)pte_pfn(*pte) << PAGE_SHIFT;
+		unsigned long offset = start & ~PAGE_MASK;
+		DebugMSG("pte: %lx", phys_addr|offset);
+	} else{ 
+		DebugMSG("no pte");
+	}
 
         up_write(&mm->mmap_sem);
 }
@@ -1839,6 +1878,23 @@ __attribute__((ms_abi)) efi_status_t efi_hook_AllocatePool(
 
         efi_print_memory_map();
         return EFI_SUCCESS;
+}
+
+__attribute__((ms_abi)) efi_status_t actual_efi_hook_AllocatePages(
+                                           EFI_ALLOCATE_TYPE     Type,
+                                           EFI_MEMORY_TYPE       MemoryType,
+                                           UINTN                 NumberOfPages,
+                                           efi_physical_addr_t   *Memory )
+{
+	efi_status_t status;
+
+	exit_efi_remap_stack();
+
+	status = efi_hook_AllocatePages(Type, MemoryType, NumberOfPages, Memory);
+
+	enter_efi_remap_stack();
+
+	return status;
 }
 
 __attribute__((ms_abi)) efi_status_t efi_hook_AllocatePages(
@@ -2405,7 +2461,7 @@ void initialize_efi_boot_service_hooks(void)
 {
         efi_boot_service_hooks[0] = efi_hook_RaiseTPL;
         efi_boot_service_hooks[1] = efi_hook_RestoreTPL;
-        efi_boot_service_hooks[2] = efi_hook_AllocatePages;
+        efi_boot_service_hooks[2] = actual_efi_hook_AllocatePages;
         efi_boot_service_hooks[3] = efi_hook_FreePages;
         efi_boot_service_hooks[4] = efi_hook_GetMemoryMap;
         efi_boot_service_hooks[5] = efi_hook_AllocatePool;
@@ -2833,6 +2889,45 @@ void efi_mark_reserved_areas(void)
                                                           entry->addr );
         }
 
+	efi_register_phys_mem_allocation(EfiLoaderData, 1400, 0x139a50000);
+}
+
+#define current_sp() ({ void *sp; __asm__("movq %%rsp, %0" : "=r" (sp) : ); sp; })
+
+void inline enter_efi_remap_stack(void)
+{
+	void *rsp = current_sp();
+	DebugMSG("RSP: %px PA %px", rsp, virt_to_phys(rsp));
+
+	phys_addr_t pa = slow_virt_to_phys(rsp);
+
+	unsigned long offset = rsp - slow_virt_to_phys(rsp);
+	DebugMSG("RSP: %px PA %px diff %lx", rsp, slow_virt_to_phys(rsp), offset);
+
+	efi_setup_11_mapping_physical_addr(
+			ALIGN_DOWN(pa - 2 * PAGE_SIZE, PAGE_SIZE),
+			ALIGN(pa + 2 * PAGE_SIZE, PAGE_SIZE));
+
+	efi_enter_rsp(offset);
+
+/*	rsp = __pa(rsp);
+	asm volatile("movq %0, %%rsp"
+		     :
+		     : "r"(rsp));*/
+
+	rsp = current_sp();
+	DebugMSG("RSP: %px", rsp);
+}
+
+void inline exit_efi_remap_stack(void)
+{
+	void *rsp = current_sp();
+	DebugMSG("RSP: %px", rsp);
+
+	efi_exit_rsp();
+
+	rsp = current_sp();
+	DebugMSG("RSP: %px", rsp);
 }
 
 void launch_efi_app(EFI_APP_ENTRY efiApp, efi_system_table_t *systab)
@@ -2857,6 +2952,12 @@ void launch_efi_app(EFI_APP_ENTRY efiApp, efi_system_table_t *systab)
                                                         systab,
                                                         sizeof( *systab ));
 
+	register long rsp asm ("rsp");
+	DebugMSG("RSP: %lx PA %lx", rsp, __pa(rsp));
+
+	enter_efi_remap_stack();
+
+	DebugMSG("RSP: %lx PA %lx", rsp, __pa(rsp));
         efiApp( ImageHandle, remapped_systab );
 }
 
