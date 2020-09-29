@@ -905,6 +905,8 @@ void kimage_load_pe(struct kimage *image, unsigned long nr_segments)
 efi_status_t efi_handle_protocol_LoadedImage( void* handle, void** interface )
 {
         EFI_DEVICE_PATH_PROTOCOL *windows_loader_device = NULL;
+	
+	exit_efi_remap_stack();
 
         DebugMSG( "Called" );
 
@@ -940,6 +942,8 @@ efi_status_t efi_handle_protocol_LoadedImage( void* handle, void** interface )
         DebugMSG( "ImageCodeType    = 0x%x;", windows_loaded_image.ImageCodeType );
         DebugMSG( "ImageDataType    = 0x%x;", windows_loaded_image.ImageDataType );
         DebugMSG( "Unload           = %px;", windows_loaded_image.Unload);
+
+	enter_efi_remap_stack();
 
         return EFI_SUCCESS;
 }
@@ -1132,11 +1136,13 @@ efi_status_t efi_handle_protocol_DevicePath( void* handle, void** interface )
 {
         int device_id = get_device_id( handle );
 
+	exit_efi_remap_stack();
+
         DebugMSG( "handle = %px", handle );
 
         if (device_id == INVALID_DEVICE_ID) {
                 DebugMSG( "unknown handle %px", handle );
-
+		enter_efi_remap_stack();
                 return EFI_UNSUPPORTED;
         }
 
@@ -1145,6 +1151,7 @@ efi_status_t efi_handle_protocol_DevicePath( void* handle, void** interface )
                                         devices[device_id].size );
         DumpBuffer( "Device Path",
                     (uint8_t*) *interface, devices[device_id].size );
+	enter_efi_remap_stack();
 
         return EFI_SUCCESS;
 }
@@ -1157,11 +1164,13 @@ efi_status_t efi_handle_protocol_BlockIO( void* handle, void** interface )
         int flags                       = O_RDWR | O_SYNC;
         int mode                        = 0;
 
+	exit_efi_remap_stack();
         DebugMSG( "handle = %px", handle );
 
         if (device_id == INVALID_DEVICE_ID) {
                 DebugMSG( "unknown handle %px", handle );
 
+		enter_efi_remap_stack();
                 return EFI_UNSUPPORTED;
         }
 
@@ -1192,6 +1201,7 @@ efi_status_t efi_handle_protocol_BlockIO( void* handle, void** interface )
 
         if (block_io->file != NULL) {
                 DebugMSG( "Device %s is already open", device_path_str );
+		enter_efi_remap_stack();
                 return EFI_SUCCESS;
         }
 
@@ -1200,9 +1210,11 @@ efi_status_t efi_handle_protocol_BlockIO( void* handle, void** interface )
 
         if (block_io->file == NULL) {
                 DebugMSG( "ERROR: Can't open device!" );
+		enter_efi_remap_stack();
                 return EFI_DEVICE_ERROR;
         }
 
+	enter_efi_remap_stack();
         return EFI_SUCCESS;
 }
 
@@ -1259,16 +1271,18 @@ efi_status_t efi_handle_protocol_SimpleTextInputExProtocol( void*  handle,
                                                             void** interface )
 {
         DebugMSG( "handle = %px", handle );
+	exit_efi_remap_stack();
 
         if (handle != (void*)CON_IN_HANDLE) {
                 DebugMSG( "unknown handle %px", handle );
-
+		enter_efi_remap_stack();
                 return EFI_UNSUPPORTED;
         }
 
         *interface = efi_map_11_and_register_allocation( &con_in,
                                                          sizeof( con_in ) );
 
+	enter_efi_remap_stack();
         return EFI_SUCCESS;
 }
 
@@ -1757,12 +1771,14 @@ __attribute__((ms_abi)) efi_status_t efi_hook_FreePages(
                                           UINTN               NumberOfPages )
 {
         efi_status_t status = EFI_SUCCESS;
+	exit_efi_remap_stack();
 
         DebugMSG( "Physical address = 0x%llx, NumberOfPages = %lld",
                    PhysicalAddress, NumberOfPages );
 
         status = efi_unregister_allocation( PhysicalAddress, NumberOfPages );
         efi_print_memory_map();
+	enter_efi_remap_stack();
         return status;
 }
 
@@ -1815,6 +1831,8 @@ __attribute__((ms_abi)) efi_status_t efi_hook_GetMemoryMap(
         *DescriptorVersion        = 1;
         *DescriptorSize           = sizeof( EFI_MEMORY_DESCRIPTOR );
 
+	exit_efi_remap_stack();
+
         DebugMSG( "MemoryMapSize @ %px "
                   "MemoryMap @ %px "
                   "DescriptorSize = %ld "
@@ -1830,6 +1848,7 @@ __attribute__((ms_abi)) efi_status_t efi_hook_GetMemoryMap(
                           "need %ld. status = 0x%lx",
                            mmap_size_in, *MemoryMapSize, status );
 
+		enter_efi_remap_stack();
                 return status;
         }
 
@@ -1851,7 +1870,18 @@ __attribute__((ms_abi)) efi_status_t efi_hook_GetMemoryMap(
         DebugMSG( "MemoryMapSize = %ld MapKey = 0x%lx", 
                   *MemoryMapSize, *MapKey );
 
+	enter_efi_remap_stack();
         return EFI_SUCCESS;
+}
+
+__attribute__((ms_abi)) efi_status_t actual_efi_hook_AllocatePool(
+                        EFI_MEMORY_TYPE pool_type,
+                        unsigned long  size,
+                        void           **buffer ) {
+	exit_efi_remap_stack();
+	efi_status_t status = efi_hook_AllocatePool(pool_type, size, buffer);
+	enter_efi_remap_stack();
+	return status;
 }
 
 __attribute__((ms_abi)) efi_status_t efi_hook_AllocatePool(
@@ -2464,7 +2494,7 @@ void initialize_efi_boot_service_hooks(void)
         efi_boot_service_hooks[2] = actual_efi_hook_AllocatePages;
         efi_boot_service_hooks[3] = efi_hook_FreePages;
         efi_boot_service_hooks[4] = efi_hook_GetMemoryMap;
-        efi_boot_service_hooks[5] = efi_hook_AllocatePool;
+        efi_boot_service_hooks[5] = actual_efi_hook_AllocatePool;
         efi_boot_service_hooks[6] = efi_hook_FreePool;
         efi_boot_service_hooks[7] = efi_hook_CreateEvent;
         efi_boot_service_hooks[8] = efi_hook_SetTimer;
