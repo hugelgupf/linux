@@ -15,6 +15,8 @@
 #include <asm/cache.h>
 #include <asm/apic.h>
 #include <asm/uv/uv.h>
+#include <asm/traps.h>
+#include <asm/pgtable.h>
 
 #include "mm_internal.h"
 
@@ -126,6 +128,7 @@ static void load_new_mm_cr3(pgd_t *pgdir, u16 new_asid, bool need_flush)
 	 * that load_cr3() is serializing and orders TLB
 	 * fills with respect to the mm_cpumask writes.
 	 */
+	//printk(KERN_ERR "load_new_mm_cr3 %lx", new_mm_cr3);
 	write_cr3(new_mm_cr3);
 }
 
@@ -410,6 +413,17 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 		this_cpu_write(cpu_tlbstate.loaded_mm, LOADED_MM_SWITCHING);
 		barrier();
 	}
+
+	//printk(KERN_ERR "pgd: %lx offset: %lx", next->pgd, pgd_offset(next, 0x1000000));
+
+	/*int level;
+	printk(KERN_ERR "next: %lx", __sme_pa(next->pgd));
+	pte_t* pte = lookup_address_in_pgd(next->pgd, (void *)do_double_fault, &level);
+	ptdump_walk_pgd_level(NULL, next->pgd);
+	if (pte)
+		printk(KERN_ERR "pte: %lx", pte->pte);
+	else
+		printk(KERN_ERR "pte not found");*/
 
 	if (need_flush) {
 		this_cpu_write(cpu_tlbstate.ctxs[new_asid].ctx_id, next->context.ctx_id);

@@ -1318,8 +1318,9 @@ void do_user_addr_fault(struct pt_regs *regs,
 	 * Reserved bits are never expected to be set on
 	 * entries in the user portion of the page tables.
 	 */
-	if (unlikely(hw_error_code & X86_PF_RSVD))
+	if (unlikely(hw_error_code & X86_PF_RSVD)) {
 		pgtable_bad(regs, hw_error_code, address);
+	}
 
 	/*
 	 * If SMAP is on, check for invalid kernel (supervisor) access to user
