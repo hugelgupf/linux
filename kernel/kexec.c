@@ -164,45 +164,7 @@ void DumpBuffer( char* title, uint8_t *buff, unsigned long size )
 static int kimage_load_pe_segment(struct kimage *image,
 			          struct kexec_segment *segment)
 {
-	unsigned long   maddr;
-	size_t          ubytes, mbytes;
-	int             result;
-	unsigned char   __user *buf              = NULL;
-        void*           raw_image_offset         = NULL;
-        unsigned long   offset_relative_to_image = 0;
-
-	result  = 0;
-	buf     = segment->buf;
-	ubytes  = segment->bufsz;
-	mbytes  = segment->memsz;
-
-        /* Address of segment in efi image (ass seen in objdump*/
-	maddr   = segment->mem;
-        
-        DumpBuffer( "Segment start", buf, 32 );
-
-	while (mbytes) {
-		size_t uchunk, mchunk;
-
-		mchunk = min_t(size_t, mbytes,
-				PAGE_SIZE - (maddr & ~PAGE_MASK));
-		uchunk = min(ubytes, mchunk);
-
-                result = copy_from_user(maddr, buf, uchunk);
-                DebugMSG( "copied 0x%lx bytes into raw image at 0x%px)",
-                          uchunk, maddr);
-	        maddr += uchunk;
-
-                if (result)
-                        return -EFAULT;
-
-		ubytes -= uchunk;
-		//maddr  += mchunk;
-		buf    += mchunk;
-		mbytes -= mchunk;
-	}
-
-	return result;
+	return copy_from_user(segment->mem, segment->buf, segment->bufsz);
 }
 
  __attribute__((ms_abi)) efi_status_t efi_block_io_reset(EFI_BLOCK_IO_PROTOCOL* block_io)
