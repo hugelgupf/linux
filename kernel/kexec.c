@@ -178,12 +178,7 @@ static int kimage_load_pe_segment(struct kimage *image,
 
         /* Address of segment in efi image (ass seen in objdump*/
 	maddr   = segment->mem;
-
-        offset_relative_to_image  = maddr - image->raw_image_mem_base;
-        raw_image_offset          = ( void* )image->raw_image + offset_relative_to_image;
-        DebugMSG( "ubytes = 0x%lx; mbytes = 0x%lx; maddr = 0x%lx; "
-                  "offset_relative_to_image = 0x%lx; raw_image_offset = %px",
-                  ubytes, mbytes, maddr, offset_relative_to_image, raw_image_offset );
+        
         DumpBuffer( "Segment start", buf, 32 );
 
 	while (mbytes) {
@@ -193,115 +188,21 @@ static int kimage_load_pe_segment(struct kimage *image,
 				PAGE_SIZE - (maddr & ~PAGE_MASK));
 		uchunk = min(ubytes, mchunk);
 
-                result = copy_from_user(raw_image_offset, buf, uchunk);
+                result = copy_from_user(maddr, buf, uchunk);
                 DebugMSG( "copied 0x%lx bytes into raw image at 0x%px)",
-                          uchunk, raw_image_offset );
-	        raw_image_offset += uchunk;
+                          uchunk, maddr);
+	        maddr += uchunk;
 
                 if (result)
                         return -EFAULT;
 
 		ubytes -= uchunk;
-		maddr  += mchunk;
+		//maddr  += mchunk;
 		buf    += mchunk;
 		mbytes -= mchunk;
 	}
 
 	return result;
-}
-
-/* Types for parsing .reloc relocation table in a PE. See
- * https://docs.microsoft.com/en-us/windows/win32/debug/pe-format#the-reloc-section-image-only
- */
-typedef struct {
-        uint32_t va_offset;  /* "Page RVA" */
-        uint32_t total_size; /* Including this header. See "Block Size" */
-} relocation_chunk_header_t;
-
-typedef struct {
-        uint16_t offset  : 12;
-        uint16_t type    : 4;
-} relocation_entry_t;
-
-
-/* This is the offset added by u-root pekexec */
-#define SEGMENTS_OFFSET_FROM_ZERO 0x1000000
-
-/* This is the IMAGE_BASE from the PE */
-/* TODO: Figure out this value programatically */
-#define IMAGE_BASE                0x10000000
-
-/* See
- * https://docs.microsoft.com/en-us/windows/desktop/debug/pe-format#base-relocation-types
- */
-#define IMAGE_REL_BASED_DIR64     10
-
-void parse_chunk_relocations( relocation_chunk_header_t* chunk, struct kimage* image )
-{
-        relocation_entry_t *relocs =
-                  (void*)chunk + sizeof( relocation_chunk_header_t );
-
-        uint32_t           num_relocs =
-                  ( chunk->total_size - sizeof( relocation_chunk_header_t ) )
-                  / sizeof( relocation_entry_t );
-
-        unsigned long      absolute_image_start =
-                        image->start - SEGMENTS_OFFSET_FROM_ZERO;
-
-        unsigned long      raw_image_vs_PE_bias =
-                        (unsigned long)image->raw_image_start -
-                        absolute_image_start;
-
-        int i;
-
-        DebugMSG( "image->raw_image_start = 0x%lx; "
-                  "image->start = 0x%lx; raw_image_vs_PE_bias = 0x%lx",
-                  (unsigned long)image->raw_image_start, image->start,
-                  raw_image_vs_PE_bias );
-
-        for( i = 0; i < num_relocs; i++ ) {
-                unsigned long address_in_image  =
-                         relocs[i].offset + chunk->va_offset;
-                uint64_t*     raw_image_content =
-                         (uint64_t*)( raw_image_vs_PE_bias + address_in_image );
-                uint64_t      correct_value     =
-                         *raw_image_content - IMAGE_BASE + raw_image_vs_PE_bias;
-                bool          should_patch      =
-                         relocs[i].type == IMAGE_REL_BASED_DIR64;
-
-                if (should_patch)
-                        *raw_image_content = correct_value;
-        }
-}
-
-/* This function interprets a segment as the .reloc section in a PE image. See
- * https://docs.microsoft.com/en-us/windows/win32/debug/pe-format
- */
-void parse_reloc_table(struct kexec_segment *segment, struct kimage* image)
-{
-        relocation_chunk_header_t* chunk       =
-                        ( relocation_chunk_header_t* )segment->buf;
-        unsigned long              segment_end =
-                        (unsigned long)segment->buf + segment->bufsz;
-
-        int i = 0;
-        DebugMSG( "segment_end = 0x%lx\n", segment_end );
-        while ( (unsigned long)chunk < segment_end )
-        {
-                DebugMSG( "chunk %d @ %px: va_offset = 0x%x chunk_size = 0x%x",
-                          i++, chunk, chunk->va_offset, chunk->total_size );
-
-                /* This is a hack. Ideally we should now the value of
-                * NumberOfRelocations from the PE header. We are having
-                * problems since SizeOfRawData > VirtualSize for the .reloc
-                * section segment. */
-                if (chunk->total_size == 0)
-                        break;
-
-                parse_chunk_relocations( chunk, image );
-
-                chunk = ( relocation_chunk_header_t* )( (void*)chunk + chunk->total_size );
-        }
 }
 
  __attribute__((ms_abi)) efi_status_t efi_block_io_reset(EFI_BLOCK_IO_PROTOCOL* block_io)
@@ -850,10 +751,8 @@ void kimage_load_pe(struct kimage *image, unsigned long nr_segments)
                 image_size += image->segment[i].memsz;
         }
 
-        /* TODO: The followng base address should be taken from the segments:
-         * image->raw_image = image->segment[0].mem;
-           We need to fix u-root to have segment[0].mem be ImageBase */
-        image->raw_image          = (void*)IMAGE_BASE;
+	/* Where the image starts, technically. */
+	image->raw_image = image->segment[0].mem;
 
         /* We allocate the raw_image in a 1:1 virt-to-phys mapping, so the code
          * can continue executing after Windows loader is taking over CR3 and
@@ -868,8 +767,7 @@ void kimage_load_pe(struct kimage *image, unsigned long nr_segments)
          * allocation on image->raw_image. */
         image->raw_image_mem_base = image->segment[0].mem;
 
-        raw_image_relative_start  = image->start - image->raw_image_mem_base;
-        image->raw_image_start    = (void*)( image->raw_image + raw_image_relative_start );
+	image->raw_image_start = image->start;
         DebugMSG(  "image->raw_image = %px; "
                    "image->raw_image_mem_base = 0x%lx; "
                    "image_size = 0x%lx; "
@@ -893,19 +791,12 @@ void kimage_load_pe(struct kimage *image, unsigned long nr_segments)
                                                         &fake_systab,
                                                         sizeof( fake_systab ));
         windows_loaded_image.SystemTable = remapped_systab;
-
-       /* We now need to parse the relocation table of the PE and then patch the
-        * efi binary. We assume that the last segment is the relocatiuon
-        * segment. */
-       /* TODO: Patch the relocations in user space. I.e., the segments being
-        * sent to kexec_load should already be patched */
-        parse_reloc_table( &image->segment[nr_segments-1], image );
 }
 
 efi_status_t efi_handle_protocol_LoadedImage( void* handle, void** interface )
 {
         EFI_DEVICE_PATH_PROTOCOL *windows_loader_device = NULL;
-	
+
 	exit_efi_remap_stack();
 
         DebugMSG( "Called" );
