@@ -2776,6 +2776,10 @@ void inline enter_efi_remap_stack(void)
 		     :
 		     : "r"(rsp));*/
 
+	// WARNING!! This is a LOAD-BEARING DEBUG PRINT. Without it, the stack
+	// doesn't align to 16 bytes anymore.
+	//
+	// WARNING!!
 	rsp = current_sp();
 	DebugMSG("RSP: %px", rsp);
 }
@@ -2787,6 +2791,10 @@ void inline exit_efi_remap_stack(void)
 
 	efi_exit_rsp();
 
+	// WARNING!! This is a LOAD-BEARING DEBUG PRINT. Without it, the stack
+	// doesn't align to 16 bytes anymore.
+	//
+	// WARNING!!
 	rsp = current_sp();
 	DebugMSG("RSP: %px", rsp);
 }
@@ -2798,6 +2806,7 @@ void launch_efi_app(EFI_APP_ENTRY efiApp, efi_system_table_t *systab)
         efi_physical_addr_t pool            = 0x100000;
         UINTN               pool_pages      = 200;
         efi_system_table_t* remapped_systab = NULL;
+	register long rsp asm ("rsp");
 
         /* We need to create a large pool of EfiConventionalMemory, so Windows
          * loader will believe there is sufficient memory. Otherwise it won't
@@ -2812,12 +2821,18 @@ void launch_efi_app(EFI_APP_ENTRY efiApp, efi_system_table_t *systab)
                 (efi_system_table_t *)efi_map_11_and_register_allocation(
                                                         systab,
                                                         sizeof( *systab ));
-
-	register long rsp asm ("rsp");
+	// WARNING!! This is a LOAD-BEARING DEBUG PRINT. Without it, the stack
+	// doesn't align to 16 bytes anymore.
+	//
+	// WARNING!!
 	DebugMSG("RSP: %lx PA %lx", rsp, __pa(rsp));
 
 	enter_efi_remap_stack();
 
+	// WARNING!! This is a LOAD-BEARING DEBUG PRINT. Without it, the stack
+	// doesn't align to 16 bytes anymore.
+	//
+	// WARNING!!
 	DebugMSG("RSP: %lx PA %lx", rsp, __pa(rsp));
         efiApp( ImageHandle, remapped_systab );
 }
