@@ -164,7 +164,8 @@ void DumpBuffer( char* title, uint8_t *buff, unsigned long size )
 static int kimage_load_pe_segment(struct kimage *image,
 			          struct kexec_segment *segment)
 {
-	return copy_from_user(segment->mem, segment->buf, segment->bufsz);
+	return copy_from_user((void *) segment->mem, segment->buf,
+			      segment->bufsz);
 }
 
  __attribute__((ms_abi)) efi_status_t efi_block_io_reset(EFI_BLOCK_IO_PROTOCOL* block_io)
@@ -187,24 +188,9 @@ static int kimage_load_pe_segment(struct kimage *image,
 	exit_efi_remap_stack();
 
         DebugMSG( "device_id = %lld, MediaId = %d, block_io->file = %px "
-                  "Lba = %lld, BufferSize = %lld, Buffer = %px, offset = %px",
+                  "Lba = %lld, BufferSize = %lld, Buffer = %px, offset = %llx",
                   block_io->device_id, MediaId, block_io->file,
                   Lba, BufferSize, Buffer, offset);
-
-        struct mm_struct      *mm  = current->mm;
-        struct vm_area_struct *vma = NULL;
-	unsigned long start = (unsigned long)Buffer;
-
-        vma = find_vma(mm, start) ;
-        DebugMSG( "start = 0x%lx, end = 0x%px, vma->vm_start = 0x%lx; "
-                  "vma->vm_end = 0x%lx",
-                  start, Buffer+BufferSize, vma->vm_start, vma->vm_end );
-        if ( vma->vm_start > start ) {
-		DebugMSG( "not in vma" );
-	}
-
-	register long rsp asm ("rsp");
-	DebugMSG("RSP: %lx PA %lx", rsp, __pa(rsp));
 
         ret = vfs_read(block_io->file, Buffer, BufferSize, &offset);
 
@@ -703,10 +689,9 @@ void* efi_map_11_and_register_allocation(void* virt_kernel_addr, size_t size);
 
 void kimage_load_pe(struct kimage *image, unsigned long nr_segments)
 {
-        unsigned long raw_image_relative_start;
-        size_t        image_size = 0;
-        int           i;
-        efi_system_table_t* remapped_systab = NULL;
+	size_t image_size = 0;
+	int i;
+	efi_system_table_t* remapped_systab = NULL;
 
         /* Calculate total image size and allocate it: */
         for (i = 0; i < nr_segments; i++) {
@@ -714,7 +699,7 @@ void kimage_load_pe(struct kimage *image, unsigned long nr_segments)
         }
 
 	/* Where the image starts, technically. */
-	image->raw_image = image->segment[0].mem;
+	image->raw_image = (void *) image->segment[0].mem;
 
         /* We allocate the raw_image in a 1:1 virt-to-phys mapping, so the code
          * can continue executing after Windows loader is taking over CR3 and
@@ -727,9 +712,9 @@ void kimage_load_pe(struct kimage *image, unsigned long nr_segments)
         /* TODO: So this is not really ImageBase. We should fix u-root. However,
          * we neex this reference value to calculate offsets inside our
          * allocation on image->raw_image. */
-        image->raw_image_mem_base = image->segment[0].mem;
+        image->raw_image_mem_base = (unsigned long) image->segment[0].mem;
 
-	image->raw_image_start = image->start;
+	image->raw_image_start = (void *) image->start;
         DebugMSG(  "image->raw_image = %px; "
                    "image->raw_image_mem_base = 0x%lx; "
                    "image_size = 0x%lx; "
@@ -1022,7 +1007,6 @@ efi_status_t efi_handle_protocol_BlockIO( void* handle, void** interface )
 
         if (device_id == INVALID_DEVICE_ID) {
                 DebugMSG( "unknown handle %px", handle );
-
 		enter_efi_remap_stack();
                 return EFI_UNSUPPORTED;
         }
@@ -1220,19 +1204,6 @@ void efi_setup_11_mapping_physical_addr( unsigned long start, unsigned long end 
                                      end - start, PAGE_KERNEL_EXEC );
         DebugMSG( "remap_pfn_range -> %d", remap_err );
 
-	DebugMSG("mm pgd: %lx, vma mm pgd: %lx", mm->pgd, vma->vm_mm->pgd);
-
-	int level;
-	pte_t* pte = lookup_address_in_pgd(mm->pgd, start, &level);
-	if (pte) {
-		DebugMSG("got pte level %d: %lx", level, *pte);
-		phys_addr_t phys_addr = (phys_addr_t)pte_pfn(*pte) << PAGE_SHIFT;
-		unsigned long offset = start & ~PAGE_MASK;
-		DebugMSG("pte: %lx", phys_addr|offset);
-	} else{ 
-		DebugMSG("no pte");
-	}
-
         up_write(&mm->mmap_sem);
 }
 
@@ -1240,6 +1211,9 @@ void efi_setup_11_mapping( void* addr, size_t size )
 {
         unsigned long start     = ALIGN_DOWN( virt_to_phys(addr), PAGE_SIZE);
         unsigned long end       = ALIGN(virt_to_phys(addr) + size, PAGE_SIZE);
+
+	DebugMSG("addr = %px, size = %lx, start = %lx, end = %lx",
+		 addr, size, start, end);
 
         efi_setup_11_mapping_physical_addr( start, end );
 }
@@ -1731,8 +1705,9 @@ __attribute__((ms_abi)) efi_status_t actual_efi_hook_AllocatePool(
                         EFI_MEMORY_TYPE pool_type,
                         unsigned long  size,
                         void           **buffer ) {
+	efi_status_t status;
 	exit_efi_remap_stack();
-	efi_status_t status = efi_hook_AllocatePool(pool_type, size, buffer);
+	status = efi_hook_AllocatePool(pool_type, size, buffer);
 	enter_efi_remap_stack();
 	return status;
 }
@@ -2552,13 +2527,14 @@ struct BGRT_TABLE* efi_find_bgrt(void)
                        sizeof(struct DESCRIPTION_HEADER))/sizeof(UINT32);
 
         for (i=0; i < num_entries; i++) {
-                u64 table_addr = (u64)rsdt->Tables[i];
+		u32 signature;
+		u64 table_addr = (u64)rsdt->Tables[i];
 
 		// Some ACPI tables use memory not marked as ACPI data in e820,
 		// so it's possible we failed to map this ACPI table.
 		efi_remap_area( table_addr, EfiReservedMemoryType );
 
-                u32 signature = *(u32*)table_addr;
+		signature = *(u32*)table_addr;
 
                 DebugMSG( "Table at 0x%llx signature = 0x%x",
                           table_addr, signature );
@@ -2779,13 +2755,15 @@ void efi_mark_reserved_areas(void)
 
 void inline enter_efi_remap_stack(void)
 {
-	void *rsp = current_sp();
-	DebugMSG("RSP: %px PA %px", rsp, virt_to_phys(rsp));
+	void *rsp;
+	unsigned long offset;
+	phys_addr_t pa;
 
-	phys_addr_t pa = slow_virt_to_phys(rsp);
+	rsp = current_sp();
+	pa = slow_virt_to_phys(rsp);
+	offset = (unsigned long long) rsp - pa;
 
-	unsigned long offset = rsp - slow_virt_to_phys(rsp);
-	DebugMSG("RSP: %px PA %px diff %lx", rsp, slow_virt_to_phys(rsp), offset);
+	DebugMSG("RSP: %px PA %llx diff %lx", rsp, slow_virt_to_phys(rsp), offset);
 
 	efi_setup_11_mapping_physical_addr(
 			ALIGN_DOWN(pa - 2 * PAGE_SIZE, PAGE_SIZE),
