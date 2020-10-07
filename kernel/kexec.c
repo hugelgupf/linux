@@ -1207,15 +1207,15 @@ void efi_setup_11_mapping_physical_addr( unsigned long start, unsigned long end 
         up_write(&mm->mmap_sem);
 }
 
-void efi_setup_11_mapping( void* addr, size_t size )
+void efi_setup_11_mapping(void *addr, size_t size)
 {
-        unsigned long start     = ALIGN_DOWN( virt_to_phys(addr), PAGE_SIZE);
-        unsigned long end       = ALIGN(virt_to_phys(addr) + size, PAGE_SIZE);
+	unsigned long start = ALIGN_DOWN(virt_to_phys(addr), PAGE_SIZE);
+	unsigned long end = ALIGN(virt_to_phys(addr + size), PAGE_SIZE);
 
 	DebugMSG("addr = %px, size = %lx, start = %lx, end = %lx",
 		 addr, size, start, end);
 
-        efi_setup_11_mapping_physical_addr( start, end );
+	efi_setup_11_mapping_physical_addr(start, end);
 }
 #define EFI_MAX_MEMORY_MAPPINGS 1000
 #define EFI_DEFAULT_MEM_ATTRIBUTES ( EFI_MEMORY_UC | EFI_MEMORY_WC | EFI_MEMORY_WT | EFI_MEMORY_WB )
@@ -1702,9 +1702,10 @@ __attribute__((ms_abi)) efi_status_t efi_hook_GetMemoryMap(
 }
 
 __attribute__((ms_abi)) efi_status_t actual_efi_hook_AllocatePool(
-                        EFI_MEMORY_TYPE pool_type,
-                        unsigned long  size,
-                        void           **buffer ) {
+		EFI_MEMORY_TYPE pool_type,
+		unsigned long size,
+		void **buffer)
+{
 	efi_status_t status;
 	exit_efi_remap_stack();
 	status = efi_hook_AllocatePool(pool_type, size, buffer);
@@ -1713,29 +1714,34 @@ __attribute__((ms_abi)) efi_status_t actual_efi_hook_AllocatePool(
 }
 
 __attribute__((ms_abi)) efi_status_t efi_hook_AllocatePool(
-                        EFI_MEMORY_TYPE pool_type,
-                        unsigned long  size,
-                        void           **buffer )
+		EFI_MEMORY_TYPE pool_type,
+		unsigned long size,
+		void **buffer)
 {
-        void* allocation = NULL;
+	void *allocation = NULL;
+	unsigned long long diff;
 
-        DebugMSG( "pool_type = 0x%x (%s), size = 0x%lx",
-                  pool_type, get_efi_mem_type_str( pool_type ), size );
+	DebugMSG("pool_type = 0x%x (%s), size = 0x%lx",
+		 pool_type, get_efi_mem_type_str(pool_type), size);
 
-        allocation = kmalloc( size, GFP_KERNEL | GFP_DMA );
-        if (allocation == NULL)
-                return EFI_OUT_OF_RESOURCES;
+	allocation = kmalloc(size, GFP_KERNEL | GFP_DMA);
+	if (allocation == NULL)
+		return EFI_OUT_OF_RESOURCES;
 
-        DebugMSG( "Allocated at 0x%px (physical addr: 0x%llx)",
-                  allocation, virt_to_phys( allocation ) );
+	DebugMSG("Allocated at 0x%px (physical addr: 0x%llx)",
+		 allocation, virt_to_phys(allocation));
 
-        efi_setup_11_mapping( allocation, size );
-        *buffer = ( void* )virt_to_phys( allocation );
+	efi_setup_11_mapping(allocation, size);
+	*buffer = (void *) virt_to_phys(allocation);
 
-        efi_register_mem_allocation( pool_type, NUM_PAGES( size ), allocation );
+	diff = (unsigned long long) allocation -
+		(unsigned long long) ALIGN_DOWN((uint64_t) allocation, PAGE_SIZE);
+	efi_register_mem_allocation(pool_type,
+				    NUM_PAGES(diff + size),
+				    ALIGN_DOWN((uint64_t) allocation, PAGE_SIZE));
 
-        efi_print_memory_map();
-        return EFI_SUCCESS;
+	efi_print_memory_map();
+	return EFI_SUCCESS;
 }
 
 __attribute__((ms_abi)) efi_status_t actual_efi_hook_AllocatePages(
